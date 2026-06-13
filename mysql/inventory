@@ -1,0 +1,3 @@
+[mysql_servers]
+db01 ansible_host=192.168.1.101
+db02 ansible_host=192.168.1.102

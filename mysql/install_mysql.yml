@@ -1,0 +1,29 @@
+---
+- name: Install MySQL Server
+  hosts: mysql_servers
+  become: true
+
+  tasks:
+    - name: Install MySQL Server package
+      ansible.builtin.dnf:
+        name: mysql-server
+        state: present
+
+    - name: Enable MySQL service
+      ansible.builtin.systemd:
+        name: mysqld
+        enabled: true
+
+    - name: Start MySQL service
+      ansible.builtin.systemd:
+        name: mysqld
+        state: started
+
+    - name: Verify MySQL service is running
+      ansible.builtin.command: systemctl is-active mysqld
+      register: mysql_status
+      changed_when: false
+
+    - name: Display MySQL status
+      ansible.builtin.debug:
+        msg: "MySQL service status: {{ mysql_status.stdout }}"
