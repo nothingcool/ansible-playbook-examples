@@ -1,4 +1,4 @@
-	---
+---
 - name: Deploy Nginx website with MySQL insert and query
   hosts: nginx_servers
   become: true
