@@ -1,0 +1,29 @@
+---
+- name: Install Nginx Server
+  hosts: nginx_servers
+  become: true
+
+  tasks:
+    - name: Install Nginx Server package
+      ansible.builtin.dnf:
+        name: nginx
+        state: present
+
+    - name: Enable Nginx service
+      ansible.builtin.systemd:
+        name: nginx
+        enabled: true
+
+    - name: Start Nginx service
+      ansible.builtin.systemd:
+        name: nginx
+        state: started
+
+    - name: Verify Nginx service is running
+      ansible.builtin.command: systemctl is-active nginx
+      register: nginx_status
+      changed_when: false
+
+    - name: Display Nginx status
+      ansible.builtin.debug:
+        msg: "Nginx service status: {{ nginx_status.stdout }}"

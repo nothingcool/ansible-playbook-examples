@@ -1,0 +1,349 @@
+	---
+- name: Deploy Nginx website with MySQL insert and query
+  hosts: nginx_servers
+  become: true
+
+  vars:
+    website_name: mysql-demo
+    website_root: "/var/www/{{ website_name }}"
+    website_server_name: "_"
+    website_listen_port: 80
+
+    php_fpm_pool: "{{ website_name }}"
+    php_fpm_socket: "/run/php-fpm/{{ php_fpm_pool }}.sock"
+
+    mysql_db_host: "127.0.0.1"
+    mysql_db_port: 3306
+    mysql_db_name: demo_app
+    mysql_db_user: demo_user
+    mysql_db_password: "ChangeMe123!"
+
+    mysql_initialize_schema: false
+    mysql_admin_user: root
+    mysql_admin_password: ""
+    mysql_schema_sql: |
+      CREATE DATABASE IF NOT EXISTS `{{ mysql_db_name }}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+      CREATE USER IF NOT EXISTS '{{ mysql_db_user }}'@'%' IDENTIFIED BY '{{ mysql_db_password }}';
+      ALTER USER '{{ mysql_db_user }}'@'%' IDENTIFIED BY '{{ mysql_db_password }}';
+      GRANT SELECT, INSERT ON `{{ mysql_db_name }}`.* TO '{{ mysql_db_user }}'@'%';
+      FLUSH PRIVILEGES;
+      USE `{{ mysql_db_name }}`;
+      CREATE TABLE IF NOT EXISTS guestbook (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        visitor_name VARCHAR(100) NOT NULL,
+        message TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+  tasks:
+    - name: Install Nginx, PHP-FPM, and MySQL client packages
+      ansible.builtin.dnf:
+        name:
+          - nginx
+          - php
+          - php-fpm
+          - php-mysqlnd
+          - mysql
+        state: present
+
+    - name: Enable and start Nginx
+      ansible.builtin.systemd:
+        name: nginx
+        enabled: true
+        state: started
+
+    - name: Enable and start PHP-FPM
+      ansible.builtin.systemd:
+        name: php-fpm
+        enabled: true
+        state: started
+
+    - name: Create website document root
+      ansible.builtin.file:
+        path: "{{ website_root }}"
+        state: directory
+        owner: root
+        group: nginx
+        mode: "0750"
+
+    - name: Initialize MySQL database, user, grants, and table
+      ansible.builtin.command:
+        argv:
+          - mysql
+          - --protocol=TCP
+          - "--host={{ mysql_db_host }}"
+          - "--port={{ mysql_db_port }}"
+          - "--user={{ mysql_admin_user }}"
+          - "--execute={{ mysql_schema_sql }}"
+      environment:
+        MYSQL_PWD: "{{ mysql_admin_password }}"
+      changed_when: false
+      no_log: true
+      when: mysql_initialize_schema | bool
+
+    - name: Deploy PHP website
+      ansible.builtin.copy:
+        dest: "{{ website_root }}/index.php"
+        owner: root
+        group: nginx
+        mode: "0640"
+        content: |
+          <?php
+          $dbHost = {{ mysql_db_host | to_json }};
+          $dbPort = {{ mysql_db_port | to_json }};
+          $dbName = {{ mysql_db_name | to_json }};
+          $dbUser = {{ mysql_db_user | to_json }};
+          $dbPassword = {{ mysql_db_password | to_json }};
+          $message = "";
+          $error = "";
+
+          function h($value) {
+              return htmlspecialchars($value ?? "", ENT_QUOTES, "UTF-8");
+          }
+
+          try {
+              $dsn = "mysql:host={$dbHost};port={$dbPort};dbname={$dbName};charset=utf8mb4";
+              $pdo = new PDO($dsn, $dbUser, $dbPassword, [
+                  PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                  PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+              ]);
+
+              if ($_SERVER["REQUEST_METHOD"] === "POST") {
+                  $visitorName = trim($_POST["visitor_name"] ?? "");
+                  $visitorMessage = trim($_POST["message"] ?? "");
+
+                  if ($visitorName === "" || $visitorMessage === "") {
+                      $error = "Name and message are required.";
+                  } else {
+                      $stmt = $pdo->prepare(
+                          "INSERT INTO guestbook (visitor_name, message) VALUES (:visitor_name, :message)"
+                      );
+                      $stmt->execute([
+                          ":visitor_name" => $visitorName,
+                          ":message" => $visitorMessage,
+                      ]);
+                      $message = "Record inserted successfully.";
+                  }
+              }
+
+              $stmt = $pdo->query(
+                  "SELECT id, visitor_name, message, created_at FROM guestbook ORDER BY id DESC LIMIT 20"
+              );
+              $records = $stmt->fetchAll();
+          } catch (Throwable $exception) {
+              $records = [];
+              $error = "Database error: " . $exception->getMessage();
+          }
+          ?>
+          <!doctype html>
+          <html lang="en">
+          <head>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1">
+              <title>MySQL Demo Website</title>
+              <style>
+                  body {
+                      margin: 0;
+                      font-family: Arial, sans-serif;
+                      background: #f5f7fb;
+                      color: #1f2937;
+                  }
+                  main {
+                      max-width: 900px;
+                      margin: 40px auto;
+                      padding: 0 20px;
+                  }
+                  h1 {
+                      margin-bottom: 8px;
+                  }
+                  form, table {
+                      width: 100%;
+                      background: #ffffff;
+                      border: 1px solid #d8dee9;
+                      border-radius: 6px;
+                      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+                  }
+                  form {
+                      box-sizing: border-box;
+                      display: grid;
+                      gap: 14px;
+                      padding: 20px;
+                      margin: 24px 0;
+                  }
+                  label {
+                      display: grid;
+                      gap: 6px;
+                      font-weight: 700;
+                  }
+                  input, textarea {
+                      box-sizing: border-box;
+                      width: 100%;
+                      padding: 10px;
+                      border: 1px solid #b7c0cc;
+                      border-radius: 4px;
+                      font: inherit;
+                  }
+                  button {
+                      width: fit-content;
+                      padding: 10px 16px;
+                      border: 0;
+                      border-radius: 4px;
+                      background: #136f63;
+                      color: #ffffff;
+                      font-weight: 700;
+                      cursor: pointer;
+                  }
+                  table {
+                      border-collapse: collapse;
+                      overflow: hidden;
+                  }
+                  th, td {
+                      padding: 12px;
+                      border-bottom: 1px solid #d8dee9;
+                      text-align: left;
+                      vertical-align: top;
+                  }
+                  th {
+                      background: #e8edf3;
+                  }
+                  .notice {
+                      padding: 12px;
+                      border-radius: 4px;
+                      background: #e8f6ef;
+                      color: #14532d;
+                  }
+                  .error {
+                      padding: 12px;
+                      border-radius: 4px;
+                      background: #fdecec;
+                      color: #991b1b;
+                  }
+              </style>
+          </head>
+          <body>
+              <main>
+                  <h1>MySQL Demo Website</h1>
+                  <p>Insert guestbook entries and query the latest records from MySQL.</p>
+
+                  <?php if ($message !== ""): ?>
+                      <p class="notice"><?= h($message) ?></p>
+                  <?php endif; ?>
+
+                  <?php if ($error !== ""): ?>
+                      <p class="error"><?= h($error) ?></p>
+                  <?php endif; ?>
+
+                  <form method="post">
+                      <label>
+                          Name
+                          <input type="text" name="visitor_name" maxlength="100" required>
+                      </label>
+                      <label>
+                          Message
+                          <textarea name="message" rows="4" required></textarea>
+                      </label>
+                      <button type="submit">Insert Record</button>
+                  </form>
+
+                  <h2>Latest Records</h2>
+                  <table>
+                      <thead>
+                          <tr>
+                              <th>ID</th>
+                              <th>Name</th>
+                              <th>Message</th>
+                              <th>Created</th>
+                          </tr>
+                      </thead>
+                      <tbody>
+                          <?php foreach ($records as $record): ?>
+                              <tr>
+                                  <td><?= h($record["id"]) ?></td>
+                                  <td><?= h($record["visitor_name"]) ?></td>
+                                  <td><?= h($record["message"]) ?></td>
+                                  <td><?= h($record["created_at"]) ?></td>
+                              </tr>
+                          <?php endforeach; ?>
+                          <?php if (count($records) === 0): ?>
+                              <tr>
+                                  <td colspan="4">No records found.</td>
+                              </tr>
+                          <?php endif; ?>
+                      </tbody>
+                  </table>
+              </main>
+          </body>
+          </html>
+
+    - name: Configure PHP-FPM pool for website
+      ansible.builtin.copy:
+        dest: "/etc/php-fpm.d/{{ php_fpm_pool }}.conf"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [{{ php_fpm_pool }}]
+          user = nginx
+          group = nginx
+          listen = {{ php_fpm_socket }}
+          listen.owner = nginx
+          listen.group = nginx
+          listen.mode = 0660
+          pm = dynamic
+          pm.max_children = 20
+          pm.start_servers = 4
+          pm.min_spare_servers = 2
+          pm.max_spare_servers = 8
+          catch_workers_output = yes
+          php_admin_value[error_log] = /var/log/php-fpm/{{ php_fpm_pool }}-error.log
+          php_admin_flag[log_errors] = on
+      notify: Restart PHP-FPM
+
+    - name: Configure Nginx website
+      ansible.builtin.copy:
+        dest: "/etc/nginx/conf.d/{{ website_name }}.conf"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          server {
+              listen {{ website_listen_port }};
+              server_name {{ website_server_name }};
+              root {{ website_root }};
+              index index.php index.html;
+
+              location / {
+                  try_files $uri $uri/ /index.php?$args;
+              }
+
+              location ~ \.php$ {
+                  include fastcgi_params;
+                  fastcgi_pass unix:{{ php_fpm_socket }};
+                  fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+              }
+          }
+      notify: Restart Nginx
+
+    - name: Flush service handlers
+      ansible.builtin.meta: flush_handlers
+
+    - name: Verify website returns HTTP 200
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ website_listen_port }}/"
+        status_code: 200
+      register: website_check
+
+    - name: Display website URL
+      ansible.builtin.debug:
+        msg: "Website deployed. Browse to http://<server_ip>:<port>/"
+
+  handlers:
+    - name: Restart Nginx
+      ansible.builtin.systemd:
+        name: nginx
+        state: restarted
+
+    - name: Restart PHP-FPM
+      ansible.builtin.systemd:
+        name: php-fpm
+        state: restarted
